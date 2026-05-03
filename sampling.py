@@ -175,7 +175,32 @@ class OrderedSampler(Sampler):
         return x
 
 
-### FHS Sampling
+class OrderedSampler2(Sampler):
+    """Same schedule as OrderedSampler, but conditions with ``model(x).exp()`` like FHS (mask mass zeroed, renormalize, ``sample_categorical``). ``strategy`` / ``strategy_para`` are unused."""
+
+    def __init__(self, model, batch_dims, token_dim, strategy, strategy_para=None, order=None, device=torch.device('cuda')):
+        super().__init__(model, batch_dims, token_dim, strategy, strategy_para, device)
+        self.order = order
+
+    @torch.no_grad()
+    def sample(self, steps, proj_fun=lambda x: x):
+        order = torch.randperm(self.batch_dims[1]) if self.order is None else self.order
+        self.model.eval()
+        mask_token = self.token_dim - 1
+        x = (self.token_dim - 1) * torch.ones(*self.batch_dims, dtype=torch.int64).to(self.device)
+        x = proj_fun(x)
+
+        for i in tqdm(range(steps), total=steps, desc="Diffusion Steps"):
+            probs = self.model(x).exp()
+            probs[..., mask_token] = 0.0
+            row = probs[:, order[i], :]
+            row = row / row.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+            x[:, order[i]] = sample_categorical(row.to(torch.float32))
+
+        return x
+
+
+### FHS Sampling using model(x).exp()
 class FHS(Sampler):
     def __init__(self, model, batch_dims, token_dim, device=torch.device('cuda'), *, strategy='direct', strategy_para=None):
         super().__init__(model, batch_dims, token_dim, strategy, strategy_para, device)
@@ -218,7 +243,7 @@ class FHS(Sampler):
 
 
 
-###### FHS2
+###### FHS2 using model.logits
 class FHS2(Sampler):
     def __init__(self, model, batch_dims, token_dim, device=torch.device('cuda'), *, strategy='direct', strategy_para=None):
         super().__init__(model, batch_dims, token_dim, strategy, strategy_para, device)
