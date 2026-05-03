@@ -80,7 +80,7 @@ class DiffusionSampler(Sampler):
             t = timesteps[i]
             update_rate = self.get_update_rate(t, steps) if i < steps - 1 else 1 + 1e-3
             if changed.any():
-                mask = x == self.token_dim - 1 #找到当前序列里面是mask的位置
+                mask = x == self.token_dim - 1
                 p_condition[changed] = self.model(x[changed]).exp()
                 p_condition_mask = p_condition[mask]
                 self.nfe += 1
@@ -177,6 +177,49 @@ class OrderedSampler(Sampler):
 
 ### FHS Sampling
 class FHS(Sampler):
+    def __init__(self, model, batch_dims, token_dim, device=torch.device('cuda'), *, strategy='direct', strategy_para=None):
+        super().__init__(model, batch_dims, token_dim, strategy, strategy_para, device)
+
+    @torch.no_grad()
+    def sample(self, proj_fun=lambda x: x):
+        self.model.eval()
+        B, D = self.batch_dims
+        mask_token = self.token_dim - 1
+
+        import math
+        alpha = lambda t: math.exp(-t)
+        alpha_inv = lambda u: -math.log(u)
+
+        x = (self.token_dim - 1) * torch.ones(*self.batch_dims, dtype=torch.int64).to(self.device)
+        x = proj_fun(x)
+        tau = math.inf
+
+        for i in tqdm(range(D), total=D, desc="FHS Steps"):
+            n = D - i
+
+            u = torch.rand((), device=self.device).item()
+            tau = alpha_inv(1 - u ** (1 / n) * (1 - alpha(tau)))
+
+            # randomly select a mask token for each sample
+            is_mask = (x == mask_token)                             # (B, D)
+            l = torch.multinomial(is_mask.float(), num_samples=1)   # (B, 1)
+
+            # get sampling probability
+            probs = self.model(x).exp()                     # (B, D, S)
+            probs[..., mask_token] = 0
+            sampling_prob = probs.gather(dim=1, index=l.unsqueeze(-1).expand(-1, -1, probs.size(-1))).squeeze(1) # (B, S)
+            sampling_prob = sampling_prob / sampling_prob.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+
+            new_tokens = sample_categorical(sampling_prob)  # (B, 1)
+            x.scatter_(dim=1, index=l, src=new_tokens.unsqueeze(1))
+
+        return x
+
+
+
+
+###### FHS2
+class FHS2(Sampler):
     def __init__(self, model, batch_dims, token_dim, device=torch.device('cuda'), *, strategy='direct', strategy_para=None):
         super().__init__(model, batch_dims, token_dim, strategy, strategy_para, device)
 
