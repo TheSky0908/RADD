@@ -1,15 +1,8 @@
 import abc
-
-import numpy as np
 import torch
 import torch.nn.functional as F
 from catsample import sample_with_strategy, sample_categorical
 from tqdm import tqdm
-
-
-def _order_index(order, i):
-    v = order[i]
-    return int(v.item()) if torch.is_tensor(v) else int(v)
 
 
 class Sampler(abc.ABC):
@@ -167,8 +160,7 @@ class OrderedSampler(Sampler):
 
     @torch.no_grad()
     def sample(self, steps, proj_fun=lambda x: x):
-        # order = torch.randperm(self.batch_dims[1]) if self.order is None else self.order
-        order = np.random.permutation(self.batch_dims[1]) if self.order is None else self.order
+        order = torch.randperm(self.batch_dims[1]) if self.order is None else self.order
         self.model.eval()
         x = (self.token_dim - 1) * torch.ones(*self.batch_dims, dtype=torch.int64).to(self.device)
         x = proj_fun(x)
@@ -176,11 +168,8 @@ class OrderedSampler(Sampler):
         # for i in range(steps):
         for i in tqdm(range(steps), total=steps, desc="Diffusion Steps"):
             logits = self.model.logits(x)
-            # update_logits = logits[:, order[i], :-1]
-            # x[:, order[i]] = sample_with_strategy(update_logits, self.strategy, self.strategy_para)
-            pos = _order_index(order, i)
-            update_logits = logits[:, pos, :-1]
-            x[:, pos] = sample_with_strategy(update_logits, self.strategy, self.strategy_para)
+            update_logits = logits[:, order[i], :-1]
+            x[:, order[i]] = sample_with_strategy(update_logits, self.strategy, self.strategy_para)
         return x
 
 
@@ -193,8 +182,7 @@ class OrderedSampler2(Sampler):
 
     @torch.no_grad()
     def sample(self, steps, proj_fun=lambda x: x):
-        # order = torch.randperm(self.batch_dims[1]) if self.order is None else self.order
-        order = np.random.permutation(self.batch_dims[1]) if self.order is None else self.order
+        order = torch.randperm(self.batch_dims[1]) if self.order is None else self.order
         self.model.eval()
         mask_token = self.token_dim - 1
         x = (self.token_dim - 1) * torch.ones(*self.batch_dims, dtype=torch.int64).to(self.device)
@@ -203,15 +191,10 @@ class OrderedSampler2(Sampler):
         for i in tqdm(range(steps), total=steps, desc="Diffusion Steps"):
             probs = self.model(x).exp()  # (B, D, S)
             probs[..., mask_token] = 0
-            # sampling_prob = probs.gather(dim=1, index=l.unsqueeze(-1).expand(-1, -1, probs.size(-1))).squeeze(1)  # (B, S)
-            # sampling_prob = sampling_prob / sampling_prob.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-            # new_tokens = sample_categorical(sampling_prob.to(torch.float32))  # (B, 1)
-            # x[:, order[i]] = new_tokens
-            pos = _order_index(order, i)
-            sampling_prob = probs[:, pos, :]
+            sampling_prob = probs[:, order[i], :]
             sampling_prob = sampling_prob / sampling_prob.sum(dim=-1, keepdim=True).clamp_min(1e-12)
             new_tokens = sample_categorical(sampling_prob.to(torch.float32))
-            x[:, pos] = new_tokens
+            x[:, order[i]] = new_tokens
 
         return x
 
@@ -290,7 +273,7 @@ class FHS2(Sampler):
             logits = self.model.logits(x)
             idx = l.unsqueeze(-1).expand(-1, -1, logits.size(-1))
             update_logits = logits.gather(1, idx).squeeze(1)[:, :-1]
-            new_tokens = sample_with_strategy(update_logits, self.strategy, self.strategy_para, dtype=torch.float32)
+            new_tokens = sample_with_strategy(update_logits, self.strategy, self.strategy_para)
             x.scatter_(dim=1, index=l, src=new_tokens.unsqueeze(1))
 
         return x
